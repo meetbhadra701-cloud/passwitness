@@ -1,0 +1,13 @@
+# Controlled final-stage fault: the fixture intentionally replaces addition
+# with XOR only at the final_fault boundary.
+# passwitness-stage: pre_final
+proc
+
+# passwitness-stage: optimized
+opt
+
+# passwitness-stage: final_fault
+rename final_correct passwitness_original
+rename final_wrong final_correct
+hierarchy -top final_correct
+proc

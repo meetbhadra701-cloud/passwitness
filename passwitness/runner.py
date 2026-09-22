@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 import json
-import os
+import hashlib
 import re
+import shutil
 import subprocess
 import time
 from pathlib import Path
 
-from .formal import counterexample_from_model, load_ports, module_is_sequential, parse_model, write_miter
+from .backends import make_backend
+from .formal import counterexample_from_model, load_ports, module_is_sequential, port_correspondence_errors, write_miter
 from .models import AnalysisResult, CommandResult, FormalResult, Verdict
 from .reports import write_report, write_result
-from .verdict import classify_formal_log
 
 
 _PARAMETER_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
@@ -48,16 +49,47 @@ def _run(argv: list[str], log_path: Path, timeout: float | None, cwd: Path) -> C
     return CommandResult(argv=argv, returncode=returncode, runtime_seconds=runtime, log_path=str(log_path), timed_out=timed_out)
 
 
-def _tool_version(yosys: str, root: Path, work: Path) -> tuple[dict[str, str], str | None]:
+def _sha256_file(path: Path) -> str | None:
+    try:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(block)
+        return digest.hexdigest()
+    except OSError:
+        return None
+
+
+def _tool_version(yosys: str, root: Path, work: Path) -> tuple[dict[str, object], str | None]:
     record = _run([yosys, "-V"], work / "tool-version.log", 30, root)
     text = Path(record.log_path).read_text(encoding="utf-8", errors="replace")
     version = next((line.strip() for line in text.splitlines() if line.strip()), "")
-    commit_match = re.search(r"PassWitness source commit:\s*([0-9a-fA-F]+)", text)
-    if not commit_match:
-        commit_match = re.search(r"git sha1 ([0-9a-fA-F]+)", text)
+    reported_commit = re.search(r"git sha1 ([0-9a-fA-F]+)", text)
+    claim_match = re.search(r"PassWitness source commit:\s*([0-9a-fA-F]+)", text)
+    executable = Path(yosys)
+    if not executable.is_file():
+        resolved = shutil.which(yosys)
+        executable = Path(resolved) if resolved else executable
+    executable_sha256 = _sha256_file(executable) if executable.is_file() else None
     if record.returncode != 0 or not version:
         return {}, "Yosys is unavailable or did not return a version string."
-    return {"executable": yosys, "version": version, "commit": commit_match.group(1) if commit_match else None}, None
+    source_claim = claim_match.group(1) if claim_match else None
+    return {
+        # Legacy fields remain for Phase 1/2 consumers. `commit` is the
+        # wrapper/source claim when one exists, not an independently verified
+        # identity of the executable.
+        "executable": yosys,
+        "version": version,
+        "commit": source_claim or (reported_commit.group(1) if reported_commit else None),
+        "yosys_reported_version": version,
+        "yosys_reported_commit": reported_commit.group(1) if reported_commit else None,
+        "executable_sha256": executable_sha256,
+        "source_revision_claim": source_claim,
+        "source_revision_verified": False,
+        "source_tree_dirty": None,
+        "patch_sha256": None,
+        "verification_method": "Yosys -V output and SHA-256 of the executable path; source checkout was not supplied",
+    }, None
 
 
 def _params(parameters: list[str]) -> dict[str, str]:
@@ -93,6 +125,7 @@ def analyze(
     parameters: list[str] | None = None,
     timeout: float = 300.0,
     localize: bool = False,
+    backend_name: str = "yosys-sat",
 ) -> AnalysisResult:
     output_dir = output_dir.resolve()
     work = output_dir / "work"
@@ -155,12 +188,14 @@ def analyze(
 
         candidate_script = work / "candidate.ys"
         candidate_netlist = work / "candidate.v"
+        candidate_metadata = work / "candidate.json"
         candidate_script_text = "\n".join([
             f"read_verilog -sv {_ys_path(rtl)}",
             _parameter_commands(parameter_values, top),
             flow.read_text(encoding="utf-8"),
             "rename -top passwitness_candidate",
             f"write_verilog -noattr {_ys_path(candidate_netlist)}",
+            f"write_json {_ys_path(candidate_metadata)}",
         ]) + "\n"
         _write_text(candidate_script, candidate_script_text)
         synthesis_run = _run([yosys, "-s", str(candidate_script)], logs / "synthesis.log", timeout, output_dir.parent)
@@ -172,6 +207,7 @@ def analyze(
             "log_path": synthesis_run.log_path,
         }
         result.paths["candidate_netlist"] = str(candidate_netlist)
+        result.paths["candidate_metadata"] = str(candidate_metadata)
         if synthesis_run.timed_out:
             result.status = Verdict.TIMEOUT
             result.errors.append("Synthesis exceeded its configured timeout.")
@@ -179,6 +215,12 @@ def analyze(
             return _finish(result)
         if synthesis_run.returncode != 0 or not candidate_netlist.is_file():
             raise RuntimeError("Synthesis failed or did not produce a candidate netlist.")
+        if not candidate_metadata.is_file():
+            raise RuntimeError("Synthesis did not produce candidate interface metadata.")
+        candidate_ports = load_ports(candidate_metadata, "passwitness_candidate")
+        interface_errors = port_correspondence_errors(ports, candidate_ports)
+        if interface_errors:
+            raise RuntimeError("Golden/candidate port correspondence mismatch: " + "; ".join(interface_errors))
 
         miter = work / "miter.v"
         write_miter(miter, top, ports, parameter_values)
@@ -196,9 +238,9 @@ def analyze(
             f"sat -prove mismatch 0 -verify -set-def-inputs -show-ports -dump_json {_ys_path(cex_json)} -dump_vcd {_ys_path(cex_vcd)}",
         ]) + "\n"
         _write_text(formal_script, formal_script_text)
-        formal_run = _run([yosys, "-s", str(formal_script)], logs / "formal.log", timeout, output_dir.parent)
-        formal_log = Path(formal_run.log_path).read_text(encoding="utf-8", errors="replace")
-        verdict, reason = classify_formal_log(formal_log, formal_run.returncode, timed_out=formal_run.timed_out)
+        backend = make_backend(backend_name, yosys, output_dir.parent, timeout)
+        formal_run = backend.execute(formal_script, logs / "formal.log")
+        verdict, reason = formal_run.verdict, formal_run.reason
         result.formal = FormalResult(
             verdict=verdict,
             reason=reason,
@@ -206,12 +248,14 @@ def analyze(
             log_path=formal_run.log_path,
             counterexample_json=str(cex_json) if cex_json.is_file() else None,
             counterexample_vcd=str(cex_vcd) if cex_vcd.is_file() else None,
-            model=parse_model(formal_log),
+            model=formal_run.model,
+            backend=backend.name,
         )
         result.status = verdict
         result.paths.update({"miter": str(miter), "formal_script": str(formal_script)})
         result.verified_facts.extend([
             f"Yosys version recorded as {result.tool.get('version', 'unknown')}.",
+            f"Formal backend: {backend.name}.",
             "The golden RTL and synthesized candidate were independently loaded into a generated output-comparison miter.",
             f"Formal classification is {verdict.value} based on an explicit SAT proof marker.",
         ])
@@ -238,6 +282,7 @@ def analyze(
                 timeout=timeout,
                 ports=ports,
                 normal_candidate=candidate_netlist,
+                backend=backend,
             )
     except (OSError, UnicodeError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
         result.status = Verdict.SETUP_ERROR

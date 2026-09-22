@@ -1,4 +1,6 @@
 import os
+import json
+import shutil
 import uuid
 from pathlib import Path
 
@@ -64,6 +66,60 @@ def test_real_signed_fma_localization_and_injected_fault(tmp_path):
     assert localized.localization["checkpoints"][4]["verdict"] == "PASS"
     assert localized.localization["checkpoints"][5]["verdict"] == "FAIL"
     assert Path(localized.localization["portable_package"]).is_dir()
+    assert localized.localization["flow_fidelity"]["status"] == "PASS"
+    assert localized.localization["witness_replay"]["status"] == "CONFIRMED"
+    assert localized.tool["source_revision_verified"] is False
+    assert localized.tool["executable_sha256"]
     assert injected.status is Verdict.FAIL
     assert injected.localization["status"] == "LOCALIZED"
     assert injected.localization["first_divergent_stage"] == "injected_constant"
+    assert injected.localization["witness_replay"]["status"] == "CONFIRMED"
+
+    wide = analyze(
+        rtl=root / "fixtures/injected_fault_wide/source.v",
+        top="wide_correct",
+        flow=root / "fixtures/injected_fault_wide/synthesis.ys",
+        output_dir=output_root / "injected-wide",
+        yosys=yosys,
+        localize=True,
+        timeout=120,
+    )
+    final = analyze(
+        rtl=root / "fixtures/injected_fault_final/source.v",
+        top="final_correct",
+        flow=root / "fixtures/injected_fault_final/synthesis.ys",
+        output_dir=output_root / "injected-final",
+        yosys=yosys,
+        localize=True,
+        timeout=120,
+    )
+    assert wide.localization["first_divergent_stage"] == "faulty_scale"
+    assert wide.localization["witness_replay"]["status"] == "CONFIRMED"
+    assert final.localization["first_divergent_stage"] == "final_fault"
+    assert final.localization["witness_replay"]["status"] == "CONFIRMED"
+
+    relocated = tmp_path / "relocated-package"
+    shutil.copytree(localized.localization["portable_package"], relocated)
+    relocated_result = analyze(
+        rtl=relocated / "source" / "source.v",
+        top="fma_impl",
+        flow=relocated / "flow" / "synthesis.ys",
+        output_dir=tmp_path / "relocated-output",
+        yosys=yosys,
+        localize=True,
+        timeout=120,
+    )
+    assert relocated_result.status is Verdict.FAIL
+    assert relocated_result.localization["first_divergent_stage"] == "arith_tree"
+    assert str(root / "fixtures") not in relocated_result.rtl
+    portable_result = json.loads((relocated / "result.json").read_text())
+    assert portable_result["tool"]["executable"] == "<external-yosys>"
+
+    mismatch = analyze(
+        rtl=root / "fixtures/port_mismatch/source.v",
+        top="top",
+        flow=root / "fixtures/port_mismatch/synthesis.ys",
+        output_dir=output_root / "port-mismatch",
+        yosys=yosys,
+    )
+    assert mismatch.status is Verdict.SETUP_ERROR

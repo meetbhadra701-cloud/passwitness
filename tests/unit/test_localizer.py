@@ -1,4 +1,4 @@
-from passwitness.localizer import _apply_localization_guards, _localization_status
+from passwitness.localizer import _apply_localization_guards, _localization_status, _replay_one
 from passwitness.models import AnalysisResult, CheckpointRecord, FormalResult, Verdict
 
 
@@ -77,8 +77,8 @@ def test_instrumentation_change_downgrades_localization():
     )
     base = {"status": "LOCALIZED", "errors": []}
     checked = _apply_localization_guards(base, result, records(Verdict.PASS, Verdict.FAIL), "FAIL")
-    assert checked["status"] == "INCONCLUSIVE"
-    assert "instrumented final candidate" in checked["errors"][0]
+    assert checked["status"] == "INSTRUMENTATION_MISMATCH"
+    assert "functionally different" in checked["errors"][0]
 
 
 def test_instrumented_final_verdict_mismatch_downgrades_localization():
@@ -95,3 +95,41 @@ def test_instrumented_final_verdict_mismatch_downgrades_localization():
     checked = _apply_localization_guards(base, result, records(Verdict.PASS, Verdict.FAIL), "PASS")
     assert checked["status"] == "INCONCLUSIVE"
     assert "final checkpoint verdict differs" in checked["errors"][0]
+
+
+def test_instrumentation_failure_has_distinct_status():
+    result = AnalysisResult(
+        status=Verdict.FAIL,
+        rtl="source.v",
+        top="top",
+        flow="flow.ys",
+        output_dir="out",
+        parameters={},
+        formal=FormalResult(verdict=Verdict.FAIL),
+    )
+    base = {"status": "LOCALIZED", "errors": []}
+    checked = _apply_localization_guards(base, result, records(Verdict.PASS, Verdict.FAIL), "FAIL")
+    assert checked["status"] == "INSTRUMENTATION_MISMATCH"
+
+
+def test_missing_fixed_witness_is_not_confirmed(tmp_path):
+    class NeverCalledBackend:
+        name = "fake"
+
+    source = tmp_path / "source.v"
+    source.write_text("module top(input a, output y); assign y = a; endmodule\n")
+    result = _replay_one(
+        backend=NeverCalledBackend(),
+        rtl=source,
+        candidate=source,
+        candidate_kind="verilog",
+        candidate_module="passwitness_candidate",
+        miter=tmp_path / "miter.v",
+        ports=[type("Port", (), {"name": "a", "direction": "input"})()],
+        witness_model={},
+        expected_mismatch=1,
+        script_path=tmp_path / "replay.ys",
+        log_path=tmp_path / "replay.log",
+        target="failing",
+    )
+    assert result.status == "UNCONFIRMED"

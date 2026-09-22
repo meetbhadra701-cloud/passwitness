@@ -38,7 +38,13 @@ def _rewrite_text_files(package_dir: Path, output_dir: Path, rtl: Path, flow: Pa
 
 def _rewrite(value: Any, output_dir: Path, package_dir: Path, rtl: Path, flow: Path) -> Any:
     if isinstance(value, dict):
-        return {key: _rewrite(item, output_dir, package_dir, rtl, flow) for key, item in value.items()}
+        rewritten: dict[str, Any] = {}
+        for key, item in value.items():
+            if key == "executable" and isinstance(item, str):
+                rewritten[key] = "<external-yosys>"
+            else:
+                rewritten[key] = _rewrite(item, output_dir, package_dir, rtl, flow)
+        return rewritten
     if isinstance(value, list):
         return [_rewrite(item, output_dir, package_dir, rtl, flow) for item in value]
     if not isinstance(value, str):

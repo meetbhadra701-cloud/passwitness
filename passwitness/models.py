@@ -25,6 +25,34 @@ class CommandResult:
 
 
 @dataclass
+class ReplayResult:
+    status: str
+    reason: str
+    runtime_seconds: float | None = None
+    log_path: str | None = None
+    input_values: dict[str, Any] = field(default_factory=dict)
+    reference_outputs: dict[str, Any] = field(default_factory=dict)
+    candidate_outputs: dict[str, Any] = field(default_factory=dict)
+    mismatch: Any = None
+    backend: str = "yosys-sat"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "reason": self.reason,
+            "runtime_seconds": self.runtime_seconds,
+            "log_path": self.log_path,
+            "input_values": self.input_values,
+            "reference_outputs": self.reference_outputs,
+            "candidate_outputs": self.candidate_outputs,
+            "mismatch": self.mismatch,
+            "backend": self.backend,
+            "kind": "fixed_witness_replay",
+            "is_formal_proof": False,
+        }
+
+
+@dataclass
 class Port:
     name: str
     direction: str
@@ -41,6 +69,7 @@ class FormalResult:
     counterexample_json: str | None = None
     counterexample_vcd: str | None = None
     model: dict[str, dict[str, Any]] = field(default_factory=dict)
+    backend: str = "yosys-sat"
 
 
 @dataclass
@@ -58,6 +87,7 @@ class CheckpointRecord:
     counterexample_json: str | None = None
     counterexample_vcd: str | None = None
     model: dict[str, dict[str, Any]] = field(default_factory=dict)
+    witness_replay: dict[str, Any] | None = None
     preparation_commands: list[str] = field(default_factory=list)
     capture_commands: list[str] = field(default_factory=list)
 
@@ -76,6 +106,7 @@ class CheckpointRecord:
             "counterexample_json": self.counterexample_json,
             "counterexample_vcd": self.counterexample_vcd,
             "model": self.model,
+            "witness_replay": self.witness_replay,
             "preparation_commands": self.preparation_commands,
             "capture_commands": self.capture_commands,
         }
@@ -110,9 +141,10 @@ class AnalysisResult:
             "counterexample_json": self.formal.counterexample_json,
             "counterexample_vcd": self.formal.counterexample_vcd,
             "model": self.formal.model,
+            "backend": self.formal.backend,
         }
         payload = {
-            "schema_version": 2 if self.localization is not None else 1,
+            "schema_version": 3 if self.localization is not None and "flow_fidelity" in self.localization else (2 if self.localization is not None else 1),
             "status": self.status.value,
             "input_design": self.rtl,
             "top_module": self.top,

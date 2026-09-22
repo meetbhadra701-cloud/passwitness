@@ -44,6 +44,27 @@ def module_is_sequential(metadata_path: Path, top: str) -> bool:
     return any(str(cell.get("type", "")).startswith(sequential_prefixes) for cell in module.get("cells", {}).values())
 
 
+def port_correspondence_errors(expected: Iterable[Port], actual: Iterable[Port]) -> list[str]:
+    """Return explicit golden/candidate interface mismatches."""
+    expected_by_name = {port.name: port for port in expected}
+    actual_by_name = {port.name: port for port in actual}
+    errors: list[str] = []
+    for name in sorted(expected_by_name.keys() - actual_by_name.keys()):
+        errors.append(f"candidate is missing port {name!r}")
+    for name in sorted(actual_by_name.keys() - expected_by_name.keys()):
+        errors.append(f"candidate has unexpected port {name!r}")
+    for name in sorted(expected_by_name.keys() & actual_by_name.keys()):
+        gold = expected_by_name[name]
+        candidate = actual_by_name[name]
+        if gold.direction != candidate.direction:
+            errors.append(f"port {name!r} direction differs: {gold.direction} != {candidate.direction}")
+        if gold.width != candidate.width:
+            errors.append(f"port {name!r} width differs: {gold.width} != {candidate.width}")
+        if gold.signed != candidate.signed:
+            errors.append(f"port {name!r} signedness differs: {gold.signed} != {candidate.signed}")
+    return errors
+
+
 def _decl(port: Port, name: str, direction: str | None = None) -> str:
     direction = direction or port.direction
     signed = " signed" if port.signed else ""

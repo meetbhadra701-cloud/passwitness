@@ -18,6 +18,14 @@ def write_report(result: AnalysisResult) -> Path:
         "",
         f"**Verdict:** `{result.status.value}`",
         "",
+        "## Investigation summary",
+        "",
+        f"- Final design equivalence: `{result.formal.verdict.value}`",
+        f"- Formal backend: `{result.formal.backend}`",
+        f"- Localization: `{(result.localization or {}).get('status', 'NOT_EXECUTED')}`",
+        f"- Flow fidelity: `{(result.localization or {}).get('flow_fidelity', {}).get('status', 'NOT_EXECUTED')}`",
+        f"- First verified divergent transition: `{(result.localization or {}).get('first_divergent_stage') or 'none'}`",
+        "",
         "## Verified facts",
         "",
     ]
@@ -33,7 +41,15 @@ def write_report(result: AnalysisResult) -> Path:
         lines.append(f"- Yosys: `{result.tool.get('version', 'unknown')}`")
         if result.tool.get("commit"):
             lines.append(f"- Tool commit: `{result.tool['commit']}`")
+        if result.tool.get("yosys_reported_commit"):
+            lines.append(f"- Yosys-reported commit: `{result.tool['yosys_reported_commit']}`")
+        if result.tool.get("executable_sha256"):
+            lines.append(f"- Executable SHA-256: `{result.tool['executable_sha256']}`")
+        lines.append(f"- Source revision verified: `{result.tool.get('source_revision_verified', False)}`")
+        if result.tool.get("verification_method"):
+            lines.append(f"- Provenance method: {result.tool['verification_method']}")
     lines += ["", "## Formal result", "", f"- Status: `{result.formal.verdict.value}`", f"- Reason: {result.formal.reason}"]
+    lines.append(f"- Backend: `{result.formal.backend}`")
     if result.formal.runtime_seconds is not None:
         lines.append(f"- Runtime: `{result.formal.runtime_seconds:.3f} s`")
     if result.counterexample:
@@ -74,6 +90,25 @@ def write_report(result: AnalysisResult) -> Path:
                     lines.append(f"- Counterexample VCD: `{failing['counterexample_vcd']}`")
                 if failing.get("proof_log_path"):
                     lines.append(f"- Formal log: `{failing['proof_log_path']}`")
+        fidelity = localization.get("flow_fidelity") or {}
+        if fidelity:
+            lines += ["", "### Flow fidelity", "", f"- Status: `{fidelity.get('status', 'NOT_EXECUTED')}`"]
+            lines.append(f"- Catalog: `{fidelity.get('catalog_id') or 'explicit flow'}`")
+            lines.append(f"- Original command count: `{len(fidelity.get('original_commands', []))}`")
+            lines.append(f"- Instrumented command count: `{len(fidelity.get('instrumented_commands', []))}`")
+            lines.append(f"- Added checkpoint commands: `{len(fidelity.get('added_commands', []))}`")
+            if fidelity.get("expanded_commands"):
+                lines.append(f"- Expanded command records: `{len(fidelity['expanded_commands'])}`")
+            if fidelity.get("comparison"):
+                lines.append(f"- Final representation comparison: `{fidelity['comparison'].get('status', 'NOT_EXECUTED')}`")
+            lines.append(f"- Original final representation: `{fidelity.get('original_final_representation')}`")
+            lines.append(f"- Instrumented final representation: `{fidelity.get('instrumented_final_representation')}`")
+        replay = localization.get("witness_replay") or {}
+        if replay.get("status") != "NOT_EXECUTED":
+            lines += ["", "### Fixed-witness replay", "", f"- Status: `{replay.get('status', 'UNCONFIRMED')}`"]
+            lines.append("- Replay is explanatory evidence for one input and is not a formal proof.")
+            for target, evidence in sorted((replay.get("targets") or {}).items()):
+                lines.append(f"- `{target}`: `{evidence.get('status', 'UNCONFIRMED')}` — {evidence.get('reason', '')}")
         if localization.get("unexecuted_stages"):
             lines.append(f"- Unexecuted stages: `{localization['unexecuted_stages']}`")
         if localization.get("errors"):

@@ -1,4 +1,5 @@
 from passwitness.models import Verdict
+from passwitness.backends import EqyBackend
 from passwitness.runner import analyze
 
 
@@ -24,3 +25,9 @@ def test_malformed_parameter_is_setup_error(tmp_path):
         parameters=["not-a-parameter"],
     )
     assert result.status is Verdict.SETUP_ERROR
+
+
+def test_eqy_backend_is_explicitly_unsupported(tmp_path):
+    proof = EqyBackend().execute(tmp_path / "formal.ys", tmp_path / "eqy.log")
+    assert proof.verdict is Verdict.UNSUPPORTED
+    assert "not implemented" in proof.reason

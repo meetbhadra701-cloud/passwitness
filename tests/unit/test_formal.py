@@ -1,6 +1,6 @@
 import json
 
-from passwitness.formal import load_ports, parse_model, write_miter
+from passwitness.formal import load_ports, parse_model, port_correspondence_errors, write_miter
 from passwitness.models import Port
 
 
@@ -29,3 +29,12 @@ def test_load_ports_reads_yosys_metadata(tmp_path):
 def test_parse_model_preserves_decimal_hex_and_binary():
     model = parse_model("  \\a                          7         7            0111\n")
     assert model["a"] == {"decimal": 7, "hex": "7", "binary": "0111"}
+
+
+def test_port_correspondence_is_explicit():
+    expected = [Port("a", "input", 4, True), Port("y", "output", 8, False)]
+    actual = [Port("a", "input", 3, True), Port("z", "output", 8, False)]
+    errors = port_correspondence_errors(expected, actual)
+    assert "candidate is missing port 'y'" in errors
+    assert "candidate has unexpected port 'z'" in errors
+    assert "port 'a' width differs: 4 != 3" in errors

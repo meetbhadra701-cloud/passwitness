@@ -21,6 +21,7 @@ def _parser() -> argparse.ArgumentParser:
     analyze_parser.add_argument("--param", action="append", default=[], metavar="NAME=VALUE")
     analyze_parser.add_argument("--timeout", type=float, default=300.0, help="Per-process timeout in seconds")
     analyze_parser.add_argument("--localize", action="store_true", help="capture supported synthesis checkpoints and localize the first verified divergence")
+    analyze_parser.add_argument("--backend", choices=("yosys-sat", "eqy"), default="yosys-sat", help="formal backend; EQY is an explicit unsupported adapter until implemented")
     return parser
 
 
@@ -41,6 +42,7 @@ def main(argv: list[str] | None = None) -> int:
         parameters=args.param,
         timeout=args.timeout,
         localize=args.localize,
+        backend_name=args.backend,
     )
     print(f"PassWitness: {result.status.value}")
     print(f"result.json: {Path(result.output_dir) / 'result.json'}")

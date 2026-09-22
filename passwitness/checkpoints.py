@@ -30,6 +30,14 @@ class InstrumentedFlow:
     stages: list[CheckpointSpec] | None = None
     final_snapshot: Path | None = None
     commands: list[str] | None = None
+    original_commands: list[str] | None = None
+    instrumented_commands: list[str] | None = None
+    added_commands: list[str] | None = None
+    expanded_commands: list[dict[str, object]] | None = None
+    execution_order: list[dict[str, object]] | None = None
+    selected_options: dict[str, object] | None = None
+    catalog_id: str | None = None
+    tool_version: str | None = None
 
 
 def _ys_path(path: Path) -> str:
@@ -80,7 +88,6 @@ def _macro_plan(top: str, checkpoint_dir: Path) -> tuple[list[CheckpointSpec], l
         "opt",
         "opt",
         [
-            "flatten",
             "opt_expr",
             "check",
             "opt_clean",
@@ -111,6 +118,26 @@ def _macro_plan(top: str, checkpoint_dir: Path) -> tuple[list[CheckpointSpec], l
     return specs, commands
 
 
+def _execution_order(specs: list[CheckpointSpec]) -> list[dict[str, object]]:
+    return [
+        {
+            "index": index,
+            "name": spec.name,
+            "transition": spec.transition,
+            "commands": spec.capture_commands,
+            "snapshot": str(spec.snapshot_path),
+        }
+        for index, spec in enumerate(specs)
+    ]
+
+
+def _flow_commands(flow: Path) -> list[str]:
+    try:
+        return [line.strip() for line in flow.read_text(encoding="utf-8").splitlines() if line.strip() and not line.strip().startswith("#")]
+    except (OSError, UnicodeError):
+        return []
+
+
 def _marked_plan(flow: Path, checkpoint_dir: Path, top: str) -> tuple[list[CheckpointSpec], list[str]] | None:
     try:
         text = flow.read_text(encoding="utf-8")
@@ -125,6 +152,10 @@ def _marked_plan(flow: Path, checkpoint_dir: Path, top: str) -> tuple[list[Check
                 blocks.append(current)
             current = (marker.group(1), [])
             continue
+        if current is None and line.strip() and not line.strip().startswith("#"):
+            # A marked plan cannot silently drop an unmarked command before
+            # its first checkpoint boundary.
+            return None
         if current is not None:
             current[1].append(line)
     if current is not None:
@@ -145,7 +176,15 @@ def _marked_plan(flow: Path, checkpoint_dir: Path, top: str) -> tuple[list[Check
     return specs, commands
 
 
-def build_instrumented_flow(flow: Path, top: str, work_dir: Path, rtl: Path, parameters: dict[str, str]) -> InstrumentedFlow:
+def build_instrumented_flow(
+    flow: Path,
+    top: str,
+    work_dir: Path,
+    rtl: Path,
+    parameters: dict[str, str],
+    *,
+    tool_version: str | None = None,
+) -> InstrumentedFlow:
     """Return a plan only for flows whose boundaries are actually observable."""
     checkpoint_dir = work_dir / "checkpoints"
     macro = _macro_options(flow, top)
@@ -158,17 +197,41 @@ def build_instrumented_flow(flow: Path, top: str, work_dir: Path, rtl: Path, par
                 "or a flow with at least two `# passwitness-stage: NAME` blocks."
             ),
             mode="unsupported",
+            original_commands=_flow_commands(flow),
+            tool_version=tool_version,
         )
     if macro is not None:
+        if tool_version is None or "0.69" not in tool_version:
+            return InstrumentedFlow(
+                supported=False,
+                reason=(
+                    "The exact synth -arith_tree expansion is cataloged only for the observed Yosys 0.69 build; "
+                    "use explicit passwitness-stage markers for another Yosys version."
+                ),
+                mode="unsupported_version",
+                original_commands=_flow_commands(flow),
+                selected_options={"top": top, "arith_tree": True},
+                catalog_id="yosys-0.69-synth-arith-tree",
+                tool_version=tool_version,
+            )
         specs, commands = _macro_plan(top, checkpoint_dir)
         mode = "synth_arith_tree_expansion"
+        original_commands = _flow_commands(flow)
+        expanded = [{"original": original_commands, "replacement": commands}]
+        selected_options = {"top": top, "arith_tree": True}
+        catalog_id = "yosys-0.69-synth-arith-tree"
     else:
         specs, commands = marked  # type: ignore[misc]
         mode = "marked_explicit_flow"
+        original_commands = _flow_commands(flow)
+        expanded = []
+        selected_options = {"top": top, "marked_boundaries": [spec.name for spec in specs]}
+        catalog_id = "explicit-marked-flow"
     script_path = work_dir / "instrumented-flow.ys"
     header = [f"read_verilog -sv {_ys_path(rtl)}"]
     header.extend(f"chparam -set {name} {value} {top}" for name, value in parameters.items())
     script_path.write_text("\n".join(header + commands) + "\n", encoding="utf-8")
+    added = [command for spec in specs for command in spec.capture_commands if command.startswith("write_rtlil ")]
     return InstrumentedFlow(
         supported=True,
         reason="",
@@ -177,4 +240,15 @@ def build_instrumented_flow(flow: Path, top: str, work_dir: Path, rtl: Path, par
         stages=specs,
         final_snapshot=specs[-1].snapshot_path,
         commands=header + commands,
+        original_commands=original_commands,
+        instrumented_commands=header + commands,
+        added_commands=added,
+        expanded_commands=expanded,
+        execution_order=[
+            {"index": -1, "name": "load", "transition": "elaboration", "commands": header, "snapshot": None},
+            *(_execution_order(specs)),
+        ],
+        selected_options=selected_options,
+        catalog_id=catalog_id,
+        tool_version=tool_version,
     )

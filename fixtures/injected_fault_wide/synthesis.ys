@@ -1,0 +1,10 @@
+# Controlled width/sign fault: the fixture intentionally replaces the
+# reference with a coefficient-4 implementation at faulty_scale.
+# passwitness-stage: pre_scale
+proc
+
+# passwitness-stage: faulty_scale
+rename wide_correct passwitness_original
+rename wide_wrong wide_correct
+hierarchy -top wide_correct
+proc
