@@ -20,6 +20,7 @@ def _parser() -> argparse.ArgumentParser:
     analyze_parser.add_argument("--yosys", default="yosys", help="Yosys executable or wrapper")
     analyze_parser.add_argument("--param", action="append", default=[], metavar="NAME=VALUE")
     analyze_parser.add_argument("--timeout", type=float, default=300.0, help="Per-process timeout in seconds")
+    analyze_parser.add_argument("--localize", action="store_true", help="capture supported synthesis checkpoints and localize the first verified divergence")
     return parser
 
 
@@ -39,6 +40,7 @@ def main(argv: list[str] | None = None) -> int:
         yosys=args.yosys,
         parameters=args.param,
         timeout=args.timeout,
+        localize=args.localize,
     )
     print(f"PassWitness: {result.status.value}")
     print(f"result.json: {Path(result.output_dir) / 'result.json'}")

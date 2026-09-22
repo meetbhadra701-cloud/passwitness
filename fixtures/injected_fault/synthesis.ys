@@ -1,0 +1,9 @@
+# Explicit staged-flow fixture. The second block deliberately swaps in the
+# wrong arithmetic module; this is a test fault, not a Yosys defect.
+# passwitness-stage: pre_rewrite
+
+# passwitness-stage: injected_constant
+rename correct_arithmetic passwitness_original
+rename incorrect_candidate correct_arithmetic
+hierarchy -top correct_arithmetic
+proc

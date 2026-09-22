@@ -44,6 +44,45 @@ class FormalResult:
 
 
 @dataclass
+class CheckpointRecord:
+    name: str
+    index: int
+    transition: str
+    snapshot_path: str | None = None
+    produced: bool = False
+    verdict: Verdict = Verdict.NOT_EXECUTED
+    reason: str = "Checkpoint proof was not executed."
+    proof_runtime_seconds: float | None = None
+    proof_log_path: str | None = None
+    proof_script_path: str | None = None
+    counterexample_json: str | None = None
+    counterexample_vcd: str | None = None
+    model: dict[str, dict[str, Any]] = field(default_factory=dict)
+    preparation_commands: list[str] = field(default_factory=list)
+    capture_commands: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = {
+            "name": self.name,
+            "index": self.index,
+            "transition": self.transition,
+            "snapshot_path": self.snapshot_path,
+            "produced": self.produced,
+            "verdict": self.verdict.value,
+            "reason": self.reason,
+            "proof_runtime_seconds": self.proof_runtime_seconds,
+            "proof_log_path": self.proof_log_path,
+            "proof_script_path": self.proof_script_path,
+            "counterexample_json": self.counterexample_json,
+            "counterexample_vcd": self.counterexample_vcd,
+            "model": self.model,
+            "preparation_commands": self.preparation_commands,
+            "capture_commands": self.capture_commands,
+        }
+        return payload
+
+
+@dataclass
 class AnalysisResult:
     status: Verdict
     rtl: str
@@ -60,6 +99,7 @@ class AnalysisResult:
     verified_facts: list[str] = field(default_factory=list)
     inferences: list[str] = field(default_factory=list)
     unexecuted_checks: list[str] = field(default_factory=list)
+    localization: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         formal = {
@@ -71,8 +111,8 @@ class AnalysisResult:
             "counterexample_vcd": self.formal.counterexample_vcd,
             "model": self.formal.model,
         }
-        return {
-            "schema_version": 1,
+        payload = {
+            "schema_version": 2 if self.localization is not None else 1,
             "status": self.status.value,
             "input_design": self.rtl,
             "top_module": self.top,
@@ -89,3 +129,6 @@ class AnalysisResult:
             "inferences": self.inferences,
             "unexecuted_checks": self.unexecuted_checks,
         }
+        if self.localization is not None:
+            payload["localization"] = self.localization
+        return payload

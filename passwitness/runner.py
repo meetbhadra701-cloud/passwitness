@@ -7,7 +7,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from .formal import load_ports, module_is_sequential, parse_model, write_miter
+from .formal import counterexample_from_model, load_ports, module_is_sequential, parse_model, write_miter
 from .models import AnalysisResult, CommandResult, FormalResult, Verdict
 from .reports import write_report, write_result
 from .verdict import classify_formal_log
@@ -80,18 +80,7 @@ def _counterexample(result: AnalysisResult, ports: list) -> dict | None:
     if result.formal.verdict != Verdict.FAIL:
         return None
     model = result.formal.model
-    inputs = {port.name: model[name] for port in ports if port.direction == "input" if (name := port.name) in model}
-    reference = {
-        port.name: model[f"reference_{port.name}"]
-        for port in ports
-        if port.direction == "output" and f"reference_{port.name}" in model
-    }
-    candidate = {
-        port.name: model[f"candidate_{port.name}"]
-        for port in ports
-        if port.direction == "output" and f"candidate_{port.name}" in model
-    }
-    return {"inputs": inputs, "reference_outputs": reference, "candidate_outputs": candidate, "raw_model": model}
+    return counterexample_from_model(model, ports)
 
 
 def analyze(
@@ -103,6 +92,7 @@ def analyze(
     yosys: str = "yosys",
     parameters: list[str] | None = None,
     timeout: float = 300.0,
+    localize: bool = False,
 ) -> AnalysisResult:
     output_dir = output_dir.resolve()
     work = output_dir / "work"
@@ -116,11 +106,15 @@ def analyze(
         parameter_values = _params(parameters or [])
     except ValueError as exc:
         result = AnalysisResult(Verdict.SETUP_ERROR, str(rtl), top, str(flow), str(output_dir), {}, errors=[str(exc)])
+        if localize:
+            result.localization = {"status": "NOT_EXECUTED", "reason": "Localization was not executed because setup failed."}
         write_result(result)
         write_report(result)
         return result
 
     result = AnalysisResult(Verdict.NOT_EXECUTED, str(rtl), top, str(flow), str(output_dir), parameter_values)
+    if localize:
+        result.localization = {"status": "NOT_EXECUTED", "reason": "Localization was not executed."}
     result.paths.update({"tool_version_log": str(logs / "tool-version.log"), "synthesis_log": str(logs / "synthesis.log"), "formal_log": str(logs / "formal.log")})
     try:
         if not _TOP_NAME.fullmatch(top):
@@ -230,7 +224,22 @@ def analyze(
             result.unexecuted_checks.append("A completed equivalence proof.")
         else:
             result.unexecuted_checks.append("A trustworthy functional verdict.")
-    except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
+        if localize:
+            from .localizer import localize as run_localization
+
+            result.localization = run_localization(
+                result=result,
+                rtl=rtl,
+                top=top,
+                flow=flow,
+                output_dir=output_dir,
+                yosys=yosys,
+                parameters=parameter_values,
+                timeout=timeout,
+                ports=ports,
+                normal_candidate=candidate_netlist,
+            )
+    except (OSError, UnicodeError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
         result.status = Verdict.SETUP_ERROR
         result.errors.append(str(exc))
         result.formal = FormalResult(verdict=Verdict.NOT_EXECUTED, reason="Formal check was not executed because setup failed.")
@@ -241,4 +250,12 @@ def analyze(
 def _finish(result: AnalysisResult) -> AnalysisResult:
     write_result(result)
     write_report(result)
+    if result.localization and result.localization.get("portable_package"):
+        from .package import build_portable_package
+
+        package = build_portable_package(result)
+        result.paths["portable_package"] = str(package)
+        write_result(result)
+        write_report(result)
+        build_portable_package(result)
     return result

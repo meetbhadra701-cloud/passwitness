@@ -57,7 +57,15 @@ def _parameter_override(parameters: dict[str, str]) -> str:
     return " #(" + ", ".join(f".{name}({value})" for name, value in parameters.items()) + ")"
 
 
-def write_miter(path: Path, top: str, ports: Iterable[Port], parameters: dict[str, str]) -> None:
+def write_miter(
+    path: Path,
+    top: str,
+    ports: Iterable[Port],
+    parameters: dict[str, str],
+    *,
+    reference_module: str | None = None,
+    candidate_module: str = "passwitness_candidate",
+) -> None:
     ports = list(ports)
     inputs = [port for port in ports if port.direction == "input"]
     outputs = [port for port in ports if port.direction == "output"]
@@ -76,8 +84,9 @@ def write_miter(path: Path, top: str, ports: Iterable[Port], parameters: dict[st
         f".{port.name}(candidate_{port.name})" for port in outputs
     )
     override = _parameter_override(parameters)
-    lines.append(f"    {top}{override} gold({gold_connections});")
-    lines.append(f"    passwitness_candidate candidate({candidate_connections});")
+    reference_module = reference_module or top
+    lines.append(f"    {reference_module}{override} gold({gold_connections});")
+    lines.append(f"    {candidate_module} candidate({candidate_connections});")
     mismatch_terms = " | ".join(f"|(reference_{port.name} ^ candidate_{port.name})" for port in outputs)
     lines.append(f"    assign mismatch = {mismatch_terms};")
     lines.append("endmodule")
@@ -92,3 +101,19 @@ def parse_model(log: str) -> dict[str, dict[str, str | int]]:
             name, decimal, hexa, binary = match.groups()
             model[name] = {"decimal": int(decimal), "hex": hexa, "binary": binary}
     return model
+
+
+def counterexample_from_model(model: dict[str, dict[str, str | int]], ports: Iterable[Port]) -> dict:
+    ports = list(ports)
+    inputs = {port.name: model[port.name] for port in ports if port.direction == "input" and port.name in model}
+    reference = {
+        port.name: model[f"reference_{port.name}"]
+        for port in ports
+        if port.direction == "output" and f"reference_{port.name}" in model
+    }
+    candidate = {
+        port.name: model[f"candidate_{port.name}"]
+        for port in ports
+        if port.direction == "output" and f"candidate_{port.name}" in model
+    }
+    return {"inputs": inputs, "reference_outputs": reference, "candidate_outputs": candidate, "raw_model": model}
