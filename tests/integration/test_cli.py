@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from passwitness.models import Verdict
+from passwitness.minimization import minimize
 from passwitness.runner import analyze
 
 
@@ -33,6 +34,35 @@ def test_correct_and_incorrect_controls(tmp_path):
     )
     assert correct.status is Verdict.PASS
     assert incorrect.status is Verdict.FAIL
+
+
+@pytest.mark.integration
+def test_phase4_marked_reduction_is_independently_reverified(tmp_path):
+    yosys = os.environ.get("PASSWITNESS_YOSYS")
+    if not yosys:
+        pytest.skip("set PASSWITNESS_YOSYS to run the Yosys integration test")
+    root = Path(__file__).parents[2]
+    output = tmp_path / "phase4-reduction"
+    result = minimize(
+        rtl=root / "fixtures/reduction_control/source.v",
+        top="reduction_control",
+        flow=root / "fixtures/reduction_control/synthesis.ys",
+        output_dir=output,
+        yosys=yosys,
+        mode="PRESERVE_LOCALIZED_FAILURE",
+        target_stage="injected_constant",
+        timeout=120,
+        max_runtime=600,
+        max_evaluations=10,
+    )
+    assert result["status"] == "VERIFIED_REDUCTION"
+    assert result["verification_status"] == "VERIFIED_REDUCTION"
+    assert result["metrics"]["reduced"]["bytes"] < result["metrics"]["original"]["bytes"]
+    assert result["final_reverification"]["localization_status"] == "LOCALIZED"
+    assert result["final_reverification"]["first_divergent_stage"] == "injected_constant"
+    assert result["final_reverification"]["flow_fidelity_status"] == "PASS"
+    assert result["final_reverification"]["witness_replay_status"] == "CONFIRMED"
+    assert Path(result["portable_package"]).is_dir()
 
 
 @pytest.mark.integration

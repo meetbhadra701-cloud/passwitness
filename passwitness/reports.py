@@ -122,3 +122,66 @@ def write_report(result: AnalysisResult) -> Path:
     path = Path(result.output_dir) / "report.md"
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
+
+
+def write_minimization_report(result: dict, path: Path) -> Path:
+    """Write a reduction report with facts separated from reduction claims."""
+    metrics = result.get("metrics", {})
+    original = metrics.get("original", {})
+    reduced = metrics.get("reduced", {})
+    audit = result.get("audit", {})
+    final = result.get("final_reverification", {})
+    lines = [
+        "# PassWitness minimization report",
+        "",
+        f"**Status:** `{result.get('status', 'SETUP_ERROR')}`",
+        f"**Final independent verification:** `{result.get('verification_status', 'UNVERIFIED')}`",
+        "",
+        "## Verified facts",
+        "",
+        f"- Oracle mode: `{result.get('oracle_mode')}`",
+        f"- Overall final candidate verdict: `{final.get('overall_verdict', 'NOT_EXECUTED')}`",
+        f"- Localization: `{final.get('localization_status', 'NOT_EXECUTED')}`",
+        f"- Flow fidelity: `{final.get('flow_fidelity_status', 'NOT_EXECUTED')}`",
+        f"- Witness replay: `{final.get('witness_replay_status', 'NOT_EXECUTED')}`",
+        f"- First divergent stage: `{final.get('first_divergent_stage') or 'none'}`",
+        f"- Final candidate was independently checked in a fresh oracle directory: `{bool(final)}`",
+        "",
+        "## Size measurements",
+        "",
+        f"- Original: `{original.get('bytes', 0)} bytes`, `{original.get('lines', 0)} lines`",
+        f"- Reduced: `{reduced.get('bytes', 0)} bytes`, `{reduced.get('lines', 0)} lines`",
+        f"- Byte reduction: `{metrics.get('reduction_percent', {}).get('bytes', 0)}%`",
+        f"- Line reduction: `{metrics.get('reduction_percent', {}).get('lines', 0)}%`",
+        "",
+        "## Reduction cost",
+        "",
+        f"- Reducer: `{result.get('reducer', {}).get('name')}` `{result.get('reducer', {}).get('version')}`",
+        f"- Candidate evaluations: `{audit.get('candidate_evaluations', 0)}`",
+        f"- Accepted candidates: `{audit.get('accepted_candidates', 0)}`",
+        f"- Accepted reductions (excluding baseline): `{audit.get('accepted_reductions', 0)}`",
+        f"- Formal checks: `{audit.get('formal_checks', 0)}`",
+        f"- Reduction runtime: `{audit.get('reduction_runtime_seconds', 0.0):.3f} s`",
+        f"- Final re-verification runtime: `{audit.get('final_reverification_runtime_seconds', 0.0):.3f} s`",
+        f"- Budget exhausted: `{audit.get('budget_exhausted', False)}`",
+        "",
+        "## Audit trail",
+        "",
+        "| Candidate | Block | Accepted | Bytes | Lines | Reason |",
+        "|---|---|---:|---:|---:|---|",
+    ]
+    for entry in audit.get("history", []):
+        lines.append(
+            f"| `{entry.get('candidate_id')}` | `{entry.get('block') or ''}` | `{entry.get('accepted')}` | "
+            f"`{entry.get('source_bytes')}` | `{entry.get('source_lines')}` | {entry.get('reason', '')} |"
+        )
+    lines += ["", "## Inferences and limitations", "", "- The reduced candidate is not claimed to be globally minimal.", "- A fixed-witness replay is explanatory evidence and is not a replacement for the formal proof."]
+    if result.get("reason"):
+        lines.append(f"- Search result: {result['reason']}")
+    if result.get("errors"):
+        lines += ["", "## Errors", ""]
+        lines.extend(f"- {error}" for error in result["errors"])
+    lines += ["", "## Reproduction", "", f"- Portable package: `{result.get('portable_package') or 'not generated'}`"]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path

@@ -1,0 +1,9 @@
+# Deliberate test fault: swap in reduction_fault after the verified boundary.
+# This is not a Yosys defect.
+# passwitness-stage: pre_rewrite
+
+# passwitness-stage: injected_constant
+rename reduction_control passwitness_original
+rename reduction_fault reduction_control
+hierarchy -top reduction_control
+proc
