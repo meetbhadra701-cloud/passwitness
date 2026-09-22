@@ -58,6 +58,15 @@ def test_phase4_marked_reduction_is_independently_reverified(tmp_path):
     assert result["status"] == "VERIFIED_REDUCTION"
     assert result["verification_status"] == "VERIFIED_REDUCTION"
     assert result["metrics"]["reduced"]["bytes"] < result["metrics"]["original"]["bytes"]
+    assert result["audit"]["total_candidate_proposals"] == 4
+    assert result["audit"]["unique_candidate_hashes"] == 5
+    assert result["audit"]["oracle_executions"] == 5
+    assert result["audit"]["cache_hits"] == 0
+    assert result["audit"]["strict_size_improvements"] == 4
+    assert result["audit"]["unique_accepted_improvements"] == 4
+    assert result["audit"]["rejected_candidates"] == 0
+    candidate_002 = output / "reduction-work" / "candidate-002-correct_unused_b.v"
+    assert "module reduction_fault" in candidate_002.read_text(encoding="utf-8")
     assert result["final_reverification"]["localization_status"] == "LOCALIZED"
     assert result["final_reverification"]["first_divergent_stage"] == "injected_constant"
     assert result["final_reverification"]["flow_fidelity_status"] == "PASS"

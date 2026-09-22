@@ -83,6 +83,18 @@ an explicitly injected arithmetic fault. The signed-FMA fixture is already
 minimal for this bounded reducer, so its run records `NO_REDUCTION_FOUND` while
 reconfirming the clean failure and `arith_tree` localization.
 
+Phase 4.1 hardens successive marked-block removal by rescanning the current
+candidate, rejecting duplicate marker IDs, and requiring strict byte-size
+progress. The audit now reports proposal count, unique hashes, oracle
+executions, cache hits, oracle-positive candidates, strict improvements,
+rejections, baseline validation, and independent final verification.
+
+For syntax-aware external reduction, `scripts/sv-bugpoint-check.sh` adapts
+the existing oracle to `sv-bugpoint`'s executable check-script interface. It
+returns zero only for a confirmed PassWitness result. The adapter was executed
+against the signed-FMA reproducer in an isolated Docker build of sv-bugpoint;
+the output was independently reverified with clean and patched Yosys.
+
 ## Reproducing the signed-FMA finding
 
 The checked-in fixture is the minimized signed wide-accumulation reproducer from the investigation. The clean and patched Yosys builds used in the validation are available as Docker images in the original experiment environment. The repository includes wrappers for those images:

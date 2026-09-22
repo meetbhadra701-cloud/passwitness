@@ -107,6 +107,9 @@ class ReductionOracle:
         self.formal_checks = 0
         self.accepted = 0
         self.rejected = 0
+        self.oracle_executions = 0
+        self.cache_hits = 0
+        self.unique_candidate_hashes: set[str] = set()
 
     def _configuration_key(self, candidate_hash: str) -> str:
         flow_hash = _sha256_file(self.config.flow.resolve())
@@ -195,19 +198,21 @@ class ReductionOracle:
             raise FileNotFoundError(f"Candidate RTL does not exist: {source}")
         contents = source.read_bytes()
         candidate_hash = hashlib.sha256(contents).hexdigest()
+        self.unique_candidate_hashes.add(candidate_hash)
         key = self._configuration_key(candidate_hash)
         cache_path = self.cache / f"{key}.json"
         if cache_path.is_file() and not force:
             cached = json.loads(cache_path.read_text(encoding="utf-8"))
             cached["cached"] = True
             result = OracleResult(**cached)
+            self.cache_hits += 1
             self.count += 1
-            self.formal_checks += result.formal_checks
             self.accepted += int(result.accepted)
             self.rejected += int(not result.accepted)
             return result
 
         self.count += 1
+        self.oracle_executions += 1
         started = time.monotonic()
         output = self.evaluations / key
         input_dir = output / "candidate"

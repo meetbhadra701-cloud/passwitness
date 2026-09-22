@@ -92,6 +92,7 @@ def minimize(
         _write(output_dir / "result.json", result)
         return result
     try:
+        search_started = time.monotonic()
         config = OracleConfig(
             top=top,
             flow=flow,
@@ -113,6 +114,7 @@ def minimize(
             max_evaluations=max_evaluations,
             max_runtime=max_runtime,
         )
+        search_runtime = time.monotonic() - search_started
     except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
         result = {"schema_version": 4, "status": Verdict.SETUP_ERROR.value, "errors": [str(exc)]}
         _write(output_dir / "result.json", result)
@@ -188,13 +190,25 @@ def minimize(
             "reduction_percent": reduction_percent,
         },
         "audit": {
+            **reduction.stats,
             "candidate_evaluations": oracle.count,
-            "accepted_candidates": oracle.accepted,
-            "accepted_reductions": max(0, oracle.accepted - 1),
-            "rejected_candidates": oracle.rejected,
-            "formal_checks": oracle.formal_checks,
-            "reduction_runtime_seconds": time.monotonic() - started,
+            "unique_candidate_hashes": reduction.stats.get("unique_candidate_hashes", 0),
+            "oracle_executions": oracle.oracle_executions,
+            "cache_hits": oracle.cache_hits,
+            "accepted_candidates": reduction.stats.get("valid_oracle_accepted_candidates", 0),
+            "accepted_reductions": reduction.stats.get("strict_size_improvements", 0),
+            "unique_accepted_candidates": reduction.stats.get("unique_valid_oracle_accepted_candidates", 0),
+            "rejected_candidates": reduction.stats.get("rejected_candidates", 0),
+            "formal_checks": oracle.formal_checks + final_oracle.formal_checks,
+            "search_formal_checks": oracle.formal_checks,
+            "reduction_runtime_seconds": search_runtime,
             "final_reverification_runtime_seconds": final.runtime_seconds,
+            "final_independent_reverification": {
+                "executed": True,
+                "accepted": final.accepted,
+                "oracle_executions": final_oracle.oracle_executions,
+                "cache_hits": final_oracle.cache_hits,
+            },
             "budget_exhausted": reduction.budget_exhausted,
             "history": history,
         },

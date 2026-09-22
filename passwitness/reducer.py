@@ -56,6 +56,7 @@ class ReductionBlock:
 def find_blocks(text: str) -> list[ReductionBlock]:
     """Find non-nested, paired reduction markers and reject malformed input."""
     blocks: list[ReductionBlock] = []
+    names: set[str] = set()
     active: tuple[str, int] | None = None
     for index, line in enumerate(text.splitlines(keepends=True)):
         begin = _BEGIN.match(line)
@@ -69,6 +70,9 @@ def find_blocks(text: str) -> list[ReductionBlock]:
                 raise ValueError(f"Unmatched reduction end marker at line {index + 1}")
             if active[0] != end.group(1):
                 raise ValueError(f"Reduction marker name mismatch: {active[0]} versus {end.group(1)}")
+            if active[0] in names:
+                raise ValueError(f"Duplicate reduction block identifier: {active[0]}")
+            names.add(active[0])
             blocks.append(ReductionBlock(active[0], active[1], index))
             active = None
     if active is not None:
@@ -92,6 +96,9 @@ class ReductionHistory:
     oracle: dict[str, Any]
     runtime_seconds: float
     block: str | None = None
+    oracle_accepted: bool | None = None
+    cache_hit: bool = False
+    strict_size_improvement: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -104,6 +111,9 @@ class ReductionHistory:
             "oracle": self.oracle,
             "runtime_seconds": self.runtime_seconds,
             "block": self.block,
+            "oracle_accepted": self.oracle_accepted,
+            "cache_hit": self.cache_hit,
+            "strict_size_improvement": self.strict_size_improvement,
         }
 
 
@@ -116,6 +126,7 @@ class ReductionRun:
     started: float = field(default_factory=time.monotonic)
     budget_exhausted: bool = False
     reason: str = ""
+    stats: dict[str, Any] = field(default_factory=dict)
 
     @property
     def runtime_seconds(self) -> float:
@@ -134,7 +145,7 @@ def minimize_marked_blocks(
     rtl = rtl.resolve()
     work_dir.mkdir(parents=True, exist_ok=True)
     original_text = rtl.read_text(encoding="utf-8")
-    blocks = find_blocks(original_text)
+    block_names = [block.name for block in find_blocks(original_text)]
     run_started = time.monotonic()
     current_text = original_text
     current_path = work_dir / "best-000-source.v"
@@ -149,16 +160,42 @@ def minimize_marked_blocks(
         reason=baseline.reason,
         oracle=baseline.to_dict(),
         runtime_seconds=baseline.runtime_seconds,
+        oracle_accepted=baseline.accepted,
+        cache_hit=baseline.cached,
     )]
+    stats: dict[str, Any] = {
+        "total_candidate_proposals": 0,
+        "unique_candidate_hashes": 1,
+        "valid_oracle_accepted_candidates": 0,
+        "unique_valid_oracle_accepted_candidates": 0,
+        "strict_size_improvements": 0,
+        "unique_accepted_improvements": 0,
+        "rejected_candidates": 0,
+        "baseline_validation": {
+            "executed": True,
+            "accepted": baseline.accepted,
+            "candidate_hash": baseline.candidate_hash,
+            "cache_hit": baseline.cached,
+        },
+    }
     if not baseline.accepted:
-        return ReductionRun("SETUP_ERROR", rtl, current_path, history, reason=f"Original design is not interesting: {baseline.reason}")
-    if not blocks:
-        return ReductionRun("NO_REDUCTION_FOUND", rtl, current_path, history, reason="No explicitly marked reduction blocks were present.")
+        stats["rejected_candidates"] = 0
+        return ReductionRun("SETUP_ERROR", rtl, current_path, history, reason=f"Original design is not interesting: {baseline.reason}", stats=stats)
+    if not block_names:
+        return ReductionRun("NO_REDUCTION_FOUND", rtl, current_path, history, reason="No explicitly marked reduction blocks were present.", stats=stats)
 
     accepted_any = False
     candidate_number = 0
-    for block in blocks:
+    candidate_hashes = {baseline.candidate_hash}
+    accepted_hashes: set[str] = set()
+    oracle_accepted_hashes: set[str] = set()
+    for block_name in block_names:
         if len(history) >= max_evaluations or time.monotonic() - run_started > max_runtime:
+            stats.update({
+                "unique_candidate_hashes": len(candidate_hashes),
+                "unique_valid_oracle_accepted_candidates": len(oracle_accepted_hashes),
+                "unique_accepted_improvements": len(accepted_hashes),
+            })
             return ReductionRun(
                 "BUDGET_EXHAUSTED_WITH_REDUCTION" if accepted_any else "NO_REDUCTION_FOUND",
                 rtl,
@@ -166,32 +203,66 @@ def minimize_marked_blocks(
                 history,
                 budget_exhausted=True,
                 reason="Reduction budget exhausted.",
+                stats=stats,
             )
+        # Offsets are deliberately recomputed from the current candidate. A
+        # prior accepted deletion may have shifted every later block.
+        current_blocks = {block.name: block for block in find_blocks(current_text)}
+        block = current_blocks.get(block_name)
+        if block is None:
+            continue
         candidate_text = remove_block(current_text, block)
         candidate_number += 1
         candidate_path = work_dir / f"candidate-{candidate_number:03d}-{block.name}.v"
         candidate_path.write_text(candidate_text, encoding="utf-8")
         started = time.monotonic()
         candidate = oracle.evaluate(candidate_path, label=block.name)
+        candidate_hashes.add(candidate.candidate_hash)
+        oracle_accepted = candidate.accepted
+        if oracle_accepted:
+            oracle_accepted_hashes.add(candidate.candidate_hash)
+        current_size = len(current_text.encode("utf-8"))
+        candidate_size = len(candidate_text.encode("utf-8"))
+        strict_improvement = candidate_size < current_size
+        accepted = oracle_accepted and strict_improvement and candidate.candidate_hash != hashlib.sha256(current_text.encode("utf-8")).hexdigest()
+        reason = candidate.reason
+        if oracle_accepted and not strict_improvement:
+            reason = "oracle accepted the failure, but the candidate is not a strict byte-size improvement"
+        if oracle_accepted and strict_improvement and not accepted:
+            reason = "candidate duplicates the current accepted source"
         entry = ReductionHistory(
             candidate_id=f"candidate-{candidate_number:03d}",
             candidate_hash=candidate.candidate_hash,
             source_bytes=len(candidate_text.encode()),
             source_lines=len(candidate_text.splitlines()),
-            accepted=candidate.accepted,
-            reason=candidate.reason,
+            accepted=accepted,
+            reason=reason,
             oracle=candidate.to_dict(),
             runtime_seconds=time.monotonic() - started,
             block=block.name,
+            oracle_accepted=oracle_accepted,
+            cache_hit=candidate.cached,
+            strict_size_improvement=strict_improvement,
         )
         history.append(entry)
-        if candidate.accepted:
+        stats["total_candidate_proposals"] += 1
+        stats["valid_oracle_accepted_candidates"] += int(oracle_accepted)
+        stats["strict_size_improvements"] += int(accepted)
+        if not accepted:
+            stats["rejected_candidates"] += 1
+        if accepted:
             accepted_any = True
+            accepted_hashes.add(candidate.candidate_hash)
             current_text = candidate_text
             current_path = candidate_path
 
+    stats.update({
+        "unique_candidate_hashes": len(candidate_hashes),
+        "unique_valid_oracle_accepted_candidates": len(oracle_accepted_hashes),
+        "unique_accepted_improvements": len(accepted_hashes),
+    })
     status = "REDUCTION_FOUND" if accepted_any else "NO_REDUCTION_FOUND"
-    return ReductionRun(status, rtl, current_path, history, reason="Marked-block reduction completed.")
+    return ReductionRun(status, rtl, current_path, history, reason="Marked-block reduction completed.", stats=stats)
 
 
 def source_metrics(path: Path) -> dict[str, int]:

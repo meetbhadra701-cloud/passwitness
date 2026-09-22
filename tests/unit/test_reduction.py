@@ -1,4 +1,5 @@
 from pathlib import Path
+import hashlib
 
 import pytest
 
@@ -46,6 +47,11 @@ def test_malformed_markers_are_setup_errors():
         find_blocks("// passwitness-reduce-end: extra\n")
     with pytest.raises(ValueError):
         find_blocks("// passwitness-reduce-begin: a\n// passwitness-reduce-end: b\n")
+    with pytest.raises(ValueError, match="Duplicate reduction block identifier"):
+        find_blocks(
+            "// passwitness-reduce-begin: a\n// passwitness-reduce-end: a\n"
+            "// passwitness-reduce-begin: a\n// passwitness-reduce-end: a\n"
+        )
 
 
 def test_oracle_requires_real_failure_and_replay(tmp_path):
@@ -115,3 +121,78 @@ def test_marked_reducer_records_rejected_candidates(tmp_path):
     assert run.status == "REDUCTION_FOUND"
     assert len(run.history) == 3
     assert any(not entry.accepted for entry in run.history[1:])
+
+
+class ContentHashOracle:
+    def evaluate(self, candidate, **kwargs):
+        contents = Path(candidate).read_bytes()
+        return OracleResult(
+            accepted=True,
+            candidate_hash=hashlib.sha256(contents).hexdigest(),
+            candidate_path=str(candidate),
+            output_dir=str(Path(candidate).parent),
+            reason="accepted",
+            mode=PRESERVE_FUNCTIONAL_FAILURE,
+            overall_verdict="FAIL",
+            formal_checks=1,
+        )
+
+
+def test_successive_fixture_removals_rescan_current_source(tmp_path):
+    root = Path(__file__).parents[2]
+    source = root / "fixtures/reduction_control/source.v"
+    run = minimize_marked_blocks(
+        rtl=source,
+        oracle=ContentHashOracle(),
+        work_dir=tmp_path / "work",
+        max_evaluations=10,
+        max_runtime=30,
+    )
+    assert run.status == "REDUCTION_FOUND"
+    assert run.stats["strict_size_improvements"] == 4
+    assert run.stats["unique_candidate_hashes"] == 5
+    assert len({entry.candidate_hash for entry in run.history}) == 5
+    candidate_002 = (tmp_path / "work" / "candidate-002-correct_unused_b.v").read_text(encoding="utf-8")
+    assert "module reduction_control" in candidate_002
+    assert "module reduction_fault" in candidate_002
+    assert "correct_unused_b" not in candidate_002
+
+
+def test_reducer_reports_equal_or_duplicate_as_rejected(tmp_path):
+    source = tmp_path / "source.v"
+    source.write_text(
+        "module top;\n"
+        "// passwitness-reduce-begin: only\n"
+        "// passwitness-reduce-end: only\n"
+        "endmodule\n",
+        encoding="utf-8",
+    )
+
+    class SameSourceOracle:
+        def __init__(self):
+            self.baseline_hash = None
+
+        def evaluate(self, candidate, **kwargs):
+            actual_hash = hashlib.sha256(Path(candidate).read_bytes()).hexdigest()
+            if self.baseline_hash is None:
+                self.baseline_hash = actual_hash
+            return OracleResult(
+                accepted=True,
+                candidate_hash=self.baseline_hash,
+                candidate_path=str(candidate),
+                output_dir=str(Path(candidate).parent),
+                reason="accepted",
+                mode=PRESERVE_FUNCTIONAL_FAILURE,
+                overall_verdict="FAIL",
+                formal_checks=1,
+            )
+
+    run = minimize_marked_blocks(
+        rtl=source,
+        oracle=SameSourceOracle(),
+        work_dir=tmp_path / "work",
+        max_evaluations=5,
+        max_runtime=30,
+    )
+    assert run.stats["strict_size_improvements"] == 0
+    assert run.stats["rejected_candidates"] == 1

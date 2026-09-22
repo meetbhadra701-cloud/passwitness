@@ -158,8 +158,14 @@ def write_minimization_report(result: dict, path: Path) -> Path:
         "",
         f"- Reducer: `{result.get('reducer', {}).get('name')}` `{result.get('reducer', {}).get('version')}`",
         f"- Candidate evaluations: `{audit.get('candidate_evaluations', 0)}`",
-        f"- Accepted candidates: `{audit.get('accepted_candidates', 0)}`",
-        f"- Accepted reductions (excluding baseline): `{audit.get('accepted_reductions', 0)}`",
+        f"- Total candidate proposals: `{audit.get('total_candidate_proposals', 0)}`",
+        f"- Unique candidate hashes: `{audit.get('unique_candidate_hashes', 0)}`",
+        f"- Oracle executions: `{audit.get('oracle_executions', 0)}`",
+        f"- Cache hits: `{audit.get('cache_hits', 0)}`",
+        f"- Valid oracle-accepted candidates: `{audit.get('valid_oracle_accepted_candidates', 0)}`",
+        f"- Unique accepted candidates: `{audit.get('unique_accepted_candidates', 0)}`",
+        f"- Strict size improvements: `{audit.get('strict_size_improvements', 0)}`",
+        f"- Rejected candidates: `{audit.get('rejected_candidates', 0)}`",
         f"- Formal checks: `{audit.get('formal_checks', 0)}`",
         f"- Reduction runtime: `{audit.get('reduction_runtime_seconds', 0.0):.3f} s`",
         f"- Final re-verification runtime: `{audit.get('final_reverification_runtime_seconds', 0.0):.3f} s`",
@@ -167,13 +173,14 @@ def write_minimization_report(result: dict, path: Path) -> Path:
         "",
         "## Audit trail",
         "",
-        "| Candidate | Block | Accepted | Bytes | Lines | Reason |",
-        "|---|---|---:|---:|---:|---|",
+        "| Candidate | Block | Oracle | Cache | Strict improvement | Accepted | Bytes | Lines | Reason |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---|",
     ]
     for entry in audit.get("history", []):
         lines.append(
-            f"| `{entry.get('candidate_id')}` | `{entry.get('block') or ''}` | `{entry.get('accepted')}` | "
-            f"`{entry.get('source_bytes')}` | `{entry.get('source_lines')}` | {entry.get('reason', '')} |"
+            f"| `{entry.get('candidate_id')}` | `{entry.get('block') or ''}` | `{entry.get('oracle_accepted')}` | `{entry.get('cache_hit')}` | "
+            f"`{entry.get('strict_size_improvement')}` | `{entry.get('accepted')}` | `{entry.get('source_bytes')}` | "
+            f"`{entry.get('source_lines')}` | {entry.get('reason', '')} |"
         )
     lines += ["", "## Inferences and limitations", "", "- The reduced candidate is not claimed to be globally minimal.", "- A fixed-witness replay is explanatory evidence and is not a replacement for the formal proof."]
     if result.get("reason"):
