@@ -17,14 +17,14 @@ instrumentation mismatch, and incorrect localization all reject a candidate.
 
 ## Reducer boundary
 
-The available environment does not contain C-Reduce or `sv-bugpoint`. Yosys
-`bugpoint` is documented for minimizing designs that make Yosys crash and does
-not provide the formal failure-preservation contract required here. PassWitness
-therefore uses a small, auditable marked-block reducer as a fallback. It is not
-a Verilog parser, does not claim general source reduction, and does not claim
-global minimality. Future C-Reduce integration should invoke the same oracle
-through a wrapper that returns reducer success only for an accepted
-`OracleResult`.
+At the original Phase 4 baseline the environment did not contain C-Reduce or
+`sv-bugpoint`. Yosys `bugpoint` is documented for minimizing designs that make
+Yosys crash and does not provide the formal failure-preservation contract
+required here. PassWitness therefore added a small, auditable marked-block
+reducer as the in-tree path. It is not a Verilog parser, does not claim general
+source reduction, and does not claim global minimality. Phase 4.1 later added
+the optional `sv-bugpoint` adapter; it invokes this same oracle rather than
+replacing it. C-Reduce remains unintegrated.
 
 The search exposes runtime, evaluation-count, per-candidate timeout, temporary
 directory, and parallelism controls. The implementation intentionally caps

@@ -1,150 +1,166 @@
 # PassWitness
 
-PassWitness is a small, standalone command-line correctness debugger for synthesis flows. Phase 1 supports small combinational Verilog arithmetic designs. It runs a user-supplied Yosys flow, independently elaborates the RTL golden reference and generated candidate, and proves an explicit output-comparison miter with Yosys SAT.
+**Formal-Guided Synthesis Fault Localization and Test-Case Reduction**
 
-The tool is deliberately fail-closed. `PASS` requires the explicit Yosys SAT success marker. A SAT model is `FAIL`; timeouts, setup errors, unsupported sequential designs, and missing proof markers are never reported as `PASS`.
+PassWitness detects functional mismatches introduced during hardware synthesis, identifies the earliest verified divergent transformation, and helps reduce the failing RTL into a reproducible bug report.
 
-## Install
+PassWitness v0.1 is a small, standalone command-line tool for engineers investigating **small combinational Verilog arithmetic circuits**. It is a workflow around Yosys's existing elaboration, synthesis, and SAT capabilities; it is not a new SAT solver, parser, equivalence algorithm, or fuzzer.
 
-PassWitness has no runtime Python dependencies. With Python 3.10 or newer:
+## The problem
+
+A failed final equivalence check says that the synthesized result differs from the RTL, but it does not by itself say which synthesis transition introduced the difference. A useful investigation needs the exact flow, tool identity, intermediate representations, proof result, counterexample, and enough surrounding context for another engineer to reproduce it.
+
+## What PassWitness does
+
+PassWitness provides an explicit investigation pipeline:
+
+1. **Detect** — run a user-selected Yosys flow and independently elaborate the RTL reference and synthesized candidate.
+2. **Localize** — capture supported RTLIL checkpoints and find the first verified `PASS -> FAIL` transition.
+3. **Replay** — apply the failing checkpoint's fixed witness to the reference, preceding checkpoint, and failing checkpoint as explanatory evidence.
+4. **Minimize** — use the fail-closed oracle with marked-block reduction or the optional `sv-bugpoint` adapter.
+5. **Reverify** — rerun the selected contract in a fresh workspace after reduction.
+6. **Package** — write machine-readable JSON, a Markdown report, logs, checkpoints, witnesses, and a relocatable evidence package.
+
+The tool fails closed. A process exit code of zero is not a formal `PASS`; a SAT counterexample is not a pass; and a timeout, unsupported operation, missing proof marker, or setup error cannot become a successful diagnosis.
+
+## Real Yosys defect demonstration
+
+The checked-in `fixtures/signed_fma_bug/` design is the reduced signed wide-accumulation FMA reproducer used in the investigation. With the preserved clean Yosys build, the actual result is:
+
+| Check | Result |
+|---|---|
+| Final design equivalence | `FAIL` |
+| Last proven-equivalent checkpoint | `alumacc` |
+| First failing transition | `arith_tree` |
+| Instrumentation flow fidelity | `PASS` |
+| Fixed-witness replay | `CONFIRMED` |
+
+The corresponding patched build reports final `PASS`. The executable reports the clean base commit `e8db64c609c7ae4574e66bbd475f5f10f36d7a31`; the patched wrapper claims `30b851e63ff071578cda4e1e49eccd367f7881d9` but its source tree was not independently available to PassWitness, so that source revision is **not** marked verified.
+
+The related upstream contribution is [Yosys PR #6231](https://github.com/YosysHQ/yosys/pull/6231). At the time of this release preparation it is **open**, not merged. PassWitness does not modify or depend on that PR being accepted.
+
+## Installation
+
+Requirements:
+
+- Python 3.10 or newer.
+- An external Yosys executable, such as one from the [OSS CAD Suite](https://github.com/YosysHQ/oss-cad-suite-build), for real analyses.
+- No cloud service or paid EDA license.
+
+From a fresh checkout:
 
 ```sh
 python3 -m venv .venv
 . .venv/bin/activate
-python -m pip install -e .
+python -m pip install --upgrade pip
+python -m pip install .
 ```
 
-You also need a Yosys executable. An OSS CAD Suite installation is sufficient. `eqy` and `sby` are useful surrounding tools but are not required by the Phase 1 engine.
+Install test dependencies when developing:
 
-## First use
+```sh
+python -m pip install ".[test]"
+```
 
-The flow is applied to an already-loaded RTL design. It should synthesize the named top and leave that design selected; it should not read the RTL itself.
+The installed `passwitness` entry point and `python -m passwitness.cli` are equivalent command paths. Installation and an invocation from outside the source directory are covered in [the quick-start guide](docs/quickstart.md).
+
+## Quick start
+
+Run an ordinary correct control with any compatible Yosys executable:
 
 ```sh
 passwitness analyze \
-  --rtl examples/fir4.v \
-  --top fir4 \
-  --flow examples/synthesis.ys \
-  --output-dir out/fir4
+  --rtl fixtures/correct_arithmetic/source.v \
+  --top correct_arithmetic \
+  --flow fixtures/correct_arithmetic/synthesis.ys \
+  --yosys /path/to/yosys \
+  --output-dir out/correct
 ```
 
-Add `--localize` to use the Phase 2 checkpoint engine. Automatic localization currently supports the exact `synth -top TOP -arith_tree` flow and explicit flows divided with `# passwitness-stage: NAME` markers. Other opaque flows still receive normal Phase 1 analysis and an honest `UNSUPPORTED` localization result.
-
-For a supported localized run, PassWitness expands the version-gated documented `synth -arith_tree` pass sequence (or executes the marked blocks), writes actual RTLIL snapshots with `write_rtlil`, independently proves each snapshot against the golden RTL, and compares the instrumented final snapshot with the ordinary Phase 1 candidate. It reports a precise transition only when an earlier checkpoint is `PASS` and the next checkpoint is `FAIL`; otherwise it reports `NO_DIVERGENCE`, `INCONCLUSIVE`, `UNSUPPORTED`, `SETUP_ERROR`, or `INSTRUMENTATION_MISMATCH`. Localized Phase 3 results use schema version 3; older Phase 2 localized results remain readable as schema version 2, and non-localized Phase 1 results retain schema version 1.
-
-The command creates `result.json`, `report.md`, Yosys logs, generated scripts, the candidate netlist, and SAT witnesses below the output directory. A functional failure returns exit code 1. Setup errors return 4, timeouts 2, and unsupported designs 3.
-
-The default backend is `--backend yosys-sat`. `--backend eqy` is an explicit interface placeholder and currently reports `UNSUPPORTED`; it does not pretend that EQY was executed.
-
-## Phase 4: formal-guided minimization
-
-Reduction is an explicit operation and never changes `analyze` behavior. The
-first reducer is deliberately bounded: it removes only complete blocks marked
-with matching `// passwitness-reduce-begin: NAME` and
-`// passwitness-reduce-end: NAME` comments. Each candidate is copied to its
-own directory and checked against its own independently elaborated golden RTL.
-The existing Yosys SAT classifier, stage localizer, flow-fidelity guard, and
-fixed-witness replay are the interestingness oracle; reducer process success is
-not treated as a formal verdict. C-Reduce and Yosys bugpoint are not available
-in the preserved environment. Yosys bugpoint is crash-oriented, so it is not
-substituted for this failure-preserving oracle.
-
-For a localized failure:
+Run the known signed-FMA reproducer with the preserved clean wrapper when the validation Docker images are available:
 
 ```sh
-python3 -m passwitness.cli minimize \
-  --rtl fixtures/signed_fma_bug/source.v \
-  --top fma_impl \
-  --flow fixtures/signed_fma_bug/synthesis.ys \
-  --yosys "$PWD/tools/yosys-clean" \
-  --mode PRESERVE_LOCALIZED_FAILURE \
-  --target-stage arith_tree \
-  --output-dir out/fma-minimized
-```
-
-`PRESERVE_FUNCTIONAL_FAILURE` retains the verified final functional failure;
-`PRESERVE_LOCALIZED_FAILURE` additionally requires the selected PASS-to-FAIL
-checkpoint boundary, flow fidelity, and confirmed replay. Optional
-`--patched-yosys --require-patched-pass` runs a clean/patched control for every
-accepted candidate. Limits are set with `--max-runtime`, `--max-evaluations`,
-and `--timeout`. `--temp-dir` can place isolated candidate/formal work on a
-separate filesystem; the evidence is copied back to `--output-dir`.
-`--max-parallel-evaluations` is currently constrained to `1`
-because the bounded reducer is intentionally sequential; this explicit cap
-prevents concurrent candidates from weakening the audit trail.
-
-Every minimization writes `result.json`, `report.md`, `reduction-history.json`,
-isolated oracle analyses, a fresh final re-verification, and
-`portable-reduction/`. Results distinguish `VERIFIED_REDUCTION`,
-`NO_REDUCTION_FOUND`, `BUDGET_EXHAUSTED_WITH_REDUCTION`, and
-`UNVERIFIED_REDUCTION`; no global-minimality claim is made. The checked-in
-`fixtures/reduction_control/` fixture demonstrates a nontrivial reduction of
-an explicitly injected arithmetic fault. The signed-FMA fixture is already
-minimal for this bounded reducer, so its run records `NO_REDUCTION_FOUND` while
-reconfirming the clean failure and `arith_tree` localization.
-
-Phase 4.1 hardens successive marked-block removal by rescanning the current
-candidate, rejecting duplicate marker IDs, and requiring strict byte-size
-progress. The audit now reports proposal count, unique hashes, oracle
-executions, cache hits, oracle-positive candidates, strict improvements,
-rejections, baseline validation, and independent final verification.
-
-For syntax-aware external reduction, `scripts/sv-bugpoint-check.sh` adapts
-the existing oracle to `sv-bugpoint`'s executable check-script interface. It
-returns zero only for a confirmed PassWitness result. The adapter was executed
-against the signed-FMA reproducer in an isolated Docker build of sv-bugpoint;
-the output was independently reverified with clean and patched Yosys.
-
-## Reproducing the signed-FMA finding
-
-The checked-in fixture is the minimized signed wide-accumulation reproducer from the investigation. The clean and patched Yosys builds used in the validation are available as Docker images in the original experiment environment. The repository includes wrappers for those images:
-
-```sh
-python -m passwitness.cli analyze \
-  --rtl fixtures/signed_fma_bug/source.v \
-  --top fma_impl \
-  --flow fixtures/signed_fma_bug/synthesis.ys \
-  --yosys "$PWD/tools/yosys-clean" \
-  --output-dir out/fma-clean
-
-python -m passwitness.cli analyze \
-  --rtl fixtures/signed_fma_bug/source.v \
-  --top fma_impl \
-  --flow fixtures/signed_fma_bug/synthesis.ys \
-  --yosys "$PWD/tools/yosys-patched" \
-  --output-dir out/fma-patched
-```
-
-To reproduce the stage-localization evidence, add `--localize` and use separate output directories:
-
-```sh
-python -m passwitness.cli analyze \
+passwitness analyze \
   --rtl fixtures/signed_fma_bug/source.v \
   --top fma_impl \
   --flow fixtures/signed_fma_bug/synthesis.ys \
   --yosys "$PWD/tools/yosys-clean" \
   --localize \
-  --output-dir out/fma-localized-clean
+  --output-dir out/fma-clean
 ```
 
-The clean build is expected to report `FAIL`, with `alumacc` proven `PASS` and `arith_tree` proven `FAIL`. A localized run also creates `portable/`, containing relative-path source, flow, RTLIL checkpoints, formal and replay scripts/logs, witnesses, `result.json`, `report.md`, and a reproduction README. External Yosys binaries are intentionally not bundled. The report separates final design equivalence, flow fidelity, backend identity, tool provenance, and fixed-witness replay; replay confirmation is not a proof.
+Inspect `out/fma-clean/result.json` for automation and `out/fma-clean/report.md` for the human-readable investigation. The exact preserved environment and the optional patched comparison are documented in [reproducibility](docs/reproducibility.md).
 
-The expected verdicts are `FAIL` for clean Yosys commit `e8db64c609c7ae4574e66bbd475f5f10f36d7a31` and `PASS` for patched build `30b851e63ff071578cda4e1e49eccd367f7881d9`. The wrappers require Docker Desktop and the locally preserved images; an ordinary Yosys binary can be used with `--yosys` for other flows.
+## Understanding results
 
-## Prior art and workflow boundary
+The top-level formal status is separate from localization and flow fidelity:
 
-PassWitness reuses Yosys for Verilog elaboration, synthesis, netlist export, and SAT solving. It can be used alongside EQY, which is the established equivalence-checking engine for larger and more general workflows; Phase 1 uses a direct Yosys miter so it can preserve simple input/output witnesses and keep the command self-contained. SymbiYosys remains the orchestration layer for temporal proofs. Verismith, VlogHammer, and VeriXmith address generation and fuzzing-oriented exploration. Yosys bugpoint helps localize compiler reductions. PassWitness is the reproducible engineer-facing investigation wrapper: it records the exact flow, tool identity, generated candidate, formal logs, explicit verdict, and counterexample artifacts in one directory. It is not a parser, SAT solver, fuzzer, or replacement for EQY.
+| Status | Meaning |
+|---|---|
+| `PASS` | The explicit output-equivalence property was proved for the supported semantics. |
+| `FAIL` | Yosys SAT produced a genuine mismatch model. |
+| `TIMEOUT` | The proof or process exceeded its limit; this is not a pass. |
+| `UNSUPPORTED` | The selected design, backend, cell, or flow is outside the supported contract. |
+| `SETUP_ERROR` | Inputs, tools, generated scripts, or imports could not be prepared or executed. |
+| `NOT_EXECUTED` | A check was deliberately not reached or was skipped after an earlier blocking result. |
 
-## Scope and limitations
+`LOCALIZED` is reported only when all earlier checkpoints are proven `PASS` and the next checked checkpoint is proven `FAIL`. `INCONCLUSIVE`, an interval, or an unsupported result is used when that evidence is unavailable. `FLOW FIDELITY` is an independent comparison between the ordinary flow and the instrumented flow; a final mismatch produces `INSTRUMENTATION_MISMATCH` rather than a trusted localization.
 
-Phase 1 through Phase 3 accept Verilog designs that elaborate to a combinational top with ordinary input and output ports. Sequential logic, memories, inouts, multi-clock behavior, SystemVerilog language coverage beyond the installed Yosys frontend, arbitrary black boxes, unsupported internal cells, and localization inside opaque user-defined macros are out of scope. The user flow is trusted to select the intended top and perform synthesis; PassWitness verifies the resulting candidate and only localizes boundaries it actually instrumented.
+## Failure minimization
 
-The formal check proves bit-vector output equivalence under defined input assignments. It does not prove analog behavior, timing, power, reset behavior, X-propagation policy, or a sequential trace property.
-
-## Development
+Minimization is opt-in. The bounded built-in reducer removes complete marked blocks from the **current** candidate source, requires strict size progress, isolates every candidate, and runs the existing formal oracle against that candidate's own golden RTL.
 
 ```sh
-python -m pytest
+passwitness minimize \
+  --rtl fixtures/reduction_control/source.v \
+  --top reduction_control \
+  --flow fixtures/reduction_control/synthesis.ys \
+  --yosys /path/to/yosys \
+  --mode PRESERVE_LOCALIZED_FAILURE \
+  --target-stage injected_constant \
+  --output-dir out/reduction-control
 ```
 
-The negative controls cover identical designs, deliberately incorrect arithmetic, timeout classification, missing tools, malformed RTL, and the historical false-PASS log. Phase 3 adds version-gated flow plans, instrumentation mismatch guards, fixed-witness replay, provenance hashing, two additional injected transformations, and relocated-package integration. Phase 4 adds candidate hashing and cache keys over material verification configuration, bounded marked-block reduction, independent re-verification, reduction audit trails, and portable reduced-failure packages. `tools/fake-yosys-timeout` is only a test helper for exercising the process-timeout path. Docker is optional for unit tests and required only for the exact preserved clean/patched Yosys reproduction in this workspace.
+The optional syntax-aware [`sv-bugpoint`](https://github.com/antmicro/sv-bugpoint) adapter invokes the same PassWitness oracle and returns success to the reducer only for a confirmed interesting candidate. It was executed against the checked-in signed-FMA reproducer in an isolated Docker build. `sv-bugpoint` is not bundled. C-Reduce and Yosys `bugpoint` were not used as interchangeable source reducers in this release.
+
+The two measured v0.1 demonstrations are deliberately separate:
+
+| Benchmark | Original | Reduced | Evidence |
+|---|---:|---:|---|
+| Signed-FMA reproducer, `sv-bugpoint` | 325 bytes / 12 lines | 305 bytes / 11 lines | Clean Yosys `FAIL`, localized to `arith_tree`; patched control `PASS`. |
+| Injected arithmetic fault, marked blocks | 1110 bytes / 31 lines | 326 bytes / 15 lines | 70.63% bytes, 51.61% lines; `injected_constant`; replay `CONFIRMED`. |
+
+These are reductions observed under bounded searches, not global-minimality claims. The larger FIR4 workspace from Experiments 4–6 was not available during Phase 4.1; the checked-in `examples/fir4.v` is a correct control under its checked-in flow and is not presented as that historical reproducer.
+
+## Evidence and reproducibility
+
+Every completed analysis writes `result.json` and `report.md`. A localized or verified reduction also includes the relevant RTLIL snapshots, generated scripts, logs, formal witnesses, replay data, provenance, timing, and a `portable/` or `portable-reduction/` package with relative artifact references.
+
+The package does not include Yosys or an external reducer. Its reproduction README names the required executable and records its reported version, source-revision claim, executable hash, and verification method. Relocation of the signed-FMA package to an unrelated directory was tested successfully with the external clean Yosys dependency.
+
+## Supported designs and flows
+
+The v0.1 formal contract is a combinational bit-vector top with ordinary input/output ports. Widths, signedness, and port correspondence are checked from independent elaborations. The direct Yosys SAT backend proves an explicit output-mismatch property over defined input assignments.
+
+Automatic checkpoint localization supports the version-gated `synth -top TOP -arith_tree` catalog used by the signed-FMA investigation and explicit flows divided by `# passwitness-stage: NAME` markers. Opaque user flows are still valid for ordinary final analysis, but localization is honestly reported unsupported unless PassWitness actually instrumented their transitions.
+
+## Limitations
+
+PassWitness v0.1 does not promise arbitrary SystemVerilog, sequential or temporal verification, memories, reset behavior, X-propagation equivalence, timing/power equivalence, arbitrary black boxes, every internal Yosys cell, automatic localization inside opaque macros, universal source reduction, or production verification of every hardware design. See [limitations](docs/limitations.md) for the exact boundary.
+
+## Prior art
+
+PassWitness reuses Yosys and deliberately does not duplicate the core capabilities of [EQY](https://github.com/YosysHQ/eqy), [SymbiYosys](https://github.com/YosysHQ/SymbiYosys), [Verismith](https://github.com/ymherklotz/verismith), [VlogHammer](https://github.com/YosysHQ/yosys-web/blob/master/vloghammer.in), [VeriXmith](https://github.com/icsnju/VeriXmith), or [Yosys bugpoint](https://yosyshq.readthedocs.io/projects/yosys/en/latest/using_yosys/bugpoint.html). The distinction is the engineer-facing evidence workflow: exact flow records, verified checkpoints, fail-closed verdicts, witness replay, reduction auditing, and portable packaging. See [prior-art.md](docs/prior-art.md).
+
+## Development and testing
+
+```sh
+python -m pip install -e ".[test]"
+python -m pytest -q
+```
+
+The normal GitHub Actions workflow runs unit tests on supported Python and an actual-Yosys control integration job. The historical signed-FMA regression is version-sensitive and remains a separately documented reproduction rather than an unpinned CI claim.
+
+## License and attribution
+
+PassWitness project code is released under the MIT License. Yosys, EQY, SymbiYosys, Verismith, VlogHammer, VeriXmith, and `sv-bugpoint` are external projects; they are not bundled or claimed as PassWitness code. See [the attribution and release audit](docs/attribution.md).

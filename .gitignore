@@ -5,4 +5,9 @@ __pycache__/
 passwitness-out/
 out/
 test-output/
+ci-output/
 *.egg-info/
+build/
+dist/
+.coverage
+.ruff_cache/

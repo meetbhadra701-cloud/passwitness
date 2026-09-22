@@ -3,15 +3,41 @@ name: tests
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 jobs:
   unit:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install ".[test]"
+      - run: python -m pytest -q tests/unit
+
+  integration-controls:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install ".[test]"
-      - run: python -m pytest -q tests/unit
+      - name: Install packaged project and OSS Yosys
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y yosys
+          python -m pip install ".[test]"
+      - name: Run version-independent correct-control integration
+        run: |
+          passwitness analyze \
+            --rtl fixtures/correct_arithmetic/source.v \
+            --top correct_arithmetic \
+            --flow fixtures/correct_arithmetic/synthesis.ys \
+            --yosys "$(command -v yosys)" \
+            --output-dir ci-output/correct
+          python -c "import json; assert json.load(open('ci-output/correct/result.json'))['status'] == 'PASS'"
