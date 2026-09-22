@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -u
+if [[ "${1:-}" == "-V" ]]; then
+    echo 'Yosys simulated-timeout-wrapper'
+    exit 0
+fi
+sleep 10

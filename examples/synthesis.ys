@@ -1,0 +1,2 @@
+# PassWitness preloads the RTL before applying this script.
+synth -top fir4

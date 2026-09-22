@@ -1,0 +1,2 @@
+# This is the affected Yosys arithmetic-tree flow.
+synth -top fma_impl -arith_tree

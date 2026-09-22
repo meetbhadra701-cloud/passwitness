@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -u
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+repo_windows="$(wslpath -w "$repo_root" 2>/dev/null || printf '%s' "$repo_root")"
+docker_bin="${PASSWITNESS_DOCKER:-/mnt/c/Program Files/Docker/Docker/resources/bin/docker.exe}"
+image="${PASSWITNESS_YOSYS_CLEAN_IMAGE:-muxwise-yosys-current:exp6}"
+mapped=()
+for arg in "$@"; do
+    case "$arg" in
+        "$repo_root"/*) mapped+=("/workspace/${arg#"$repo_root"/}") ;;
+        *) mapped+=("$arg") ;;
+    esac
+done
+exec "$docker_bin" run --rm -e "PW_HOST_ROOT=$repo_root" -v "$repo_windows:/workspace" -w /workspace "$image" /bin/bash -c '
+if [[ "$1" == "-V" ]]; then
+    /build/yosys -V
+    echo "PassWitness source commit: e8db64c609c7ae4574e66bbd475f5f10f36d7a31"
+    exit 0
+fi
+if [[ "$1" == "-s" && "$2" == /workspace/* ]]; then
+    sed "s|$PW_HOST_ROOT|/workspace|g" "$2" > /tmp/passwitness-script.ys
+    exec /build/yosys -s /tmp/passwitness-script.ys
+fi
+exec /build/yosys "$@"
+' passwitness "${mapped[@]}"
