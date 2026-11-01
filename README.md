@@ -2,6 +2,8 @@
 
 **Formal-Guided Synthesis Fault Localization and Test-Case Reduction**
 
+**Project maintainer and contributor:** [Meet Bhadra (@meetbhadra701-cloud)](https://github.com/meetbhadra701-cloud).
+
 PassWitness detects functional mismatches introduced during hardware synthesis, identifies the earliest verified divergent transformation, and helps reduce the failing RTL into a reproducible bug report.
 
 PassWitness v0.1 is a small, standalone command-line tool for engineers investigating **small combinational Verilog arithmetic circuits**. It is a workflow around Yosys's existing elaboration, synthesis, and SAT capabilities; it is not a new SAT solver, parser, equivalence algorithm, or fuzzer.
