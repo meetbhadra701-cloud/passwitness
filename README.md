@@ -39,7 +39,7 @@ The checked-in `fixtures/signed_fma_bug/` design is the reduced signed wide-accu
 
 The corresponding patched build reports final `PASS`. The executable reports the clean base commit `e8db64c609c7ae4574e66bbd475f5f10f36d7a31`; the patched wrapper claims `30b851e63ff071578cda4e1e49eccd367f7881d9` but its source tree was not independently available to PassWitness, so that source revision is **not** marked verified.
 
-The related upstream contribution is [Yosys PR #6231](https://github.com/YosysHQ/yosys/pull/6231). At the time of this release preparation it is **open**, not merged. PassWitness does not modify or depend on that PR being accepted.
+The related upstream contribution, [Yosys PR #6231](https://github.com/YosysHQ/yosys/pull/6231), was merged on October 7, 2026. PassWitness does not modify Yosys or depend on the upstream fix.
 
 ## Installation
 
